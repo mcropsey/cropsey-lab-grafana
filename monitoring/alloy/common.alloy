@@ -1,0 +1,98 @@
+// /etc/alloy/common.alloy  (identical on all 5 hosts)
+// Ships the systemd journal (which also holds syslog, sshd/sudo, and every
+// Podman container's stdout/stderr - Podman's log driver is journald here)
+// plus auditd to Loki on .98. Every stream gets host=<hostname>, matching the
+// `host` label Prometheus uses.
+
+loki.write "lab" {
+  endpoint {
+    url = "http://192.168.1.98:3100/loki/api/v1/push"
+  }
+  external_labels = {host = constants.hostname}
+}
+
+// ---- journald ----------------------------------------------------------
+loki.relabel "journal" {
+  forward_to = []
+
+  // loki.source.journal ignores `labels` for job once relabel_rules is set
+  // (it would be "loki.source.journal.journal"), so set it here.
+  rule {
+    target_label = "job"
+    replacement  = "journal"
+  }
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+  // Collapse per-container / per-session units so they don't explode into
+  // thousands of streams: libpod-conmon-<id>.scope, <64-hex>-<hex>.service (podman
+  // healthchecks), session-<n>.scope.
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "libpod-conmon-.*\\.scope"
+    target_label  = "unit"
+    replacement   = "podman-container"
+  }
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "[0-9a-f]{64}(-[0-9a-f]+)?\\.(service|timer|scope)"
+    target_label  = "unit"
+    replacement   = "podman-healthcheck"
+  }
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "session-[0-9a-z]+\\.scope"
+    target_label  = "unit"
+    replacement   = "session.scope"
+  }
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+  rule {
+    source_labels = ["__journal_container_name"]
+    target_label  = "container"
+  }
+  // Container stdout/stderr arrives as priority info/err regardless of the
+  // text; drop `level` so Loki detects it from the line (ERROR, WARN...).
+  rule {
+    source_labels = ["container"]
+    regex         = ".+"
+    target_label  = "level"
+    replacement   = ""
+  }
+  // service_name (what Grafana Logs Drilldown groups by):
+  // container name > unit > syslog identifier
+  rule {
+    source_labels = ["__journal_syslog_identifier"]
+    target_label  = "service_name"
+  }
+  rule {
+    source_labels = ["unit"]
+    regex         = "(.+)"
+    target_label  = "service_name"
+  }
+  rule {
+    source_labels = ["container"]
+    regex         = "(.+)"
+    target_label  = "service_name"
+  }
+}
+
+loki.source.journal "journal" {
+  max_age       = "12h"               // backfill window on first start
+  relabel_rules = loki.relabel.journal.rules
+  forward_to    = [loki.write.lab.receiver]
+}
+
+// ---- auditd --------------------------------------------------------------
+local.file_match "audit" {
+  path_targets = [{"__path__" = "/var/log/audit/audit.log", "job" = "audit", "service_name" = "auditd"}]
+}
+
+loki.source.file "audit" {
+  targets       = local.file_match.audit.targets
+  tail_from_end = true
+  forward_to    = [loki.write.lab.receiver]
+}

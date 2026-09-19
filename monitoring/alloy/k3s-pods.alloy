@@ -1,0 +1,53 @@
+// /etc/alloy/k3s-pods.alloy  (.99 only - k3s)
+// Reads kubelet pod logs straight from disk (no API access needed):
+//   /var/log/pods/<namespace>_<pod>_<uid>/<container>/<restart>.log  (CRI format)
+
+local.file_match "pods" {
+  path_targets = [{"__path__" = "/var/log/pods/*/*/*.log"}]
+}
+
+discovery.relabel "pods" {
+  targets = local.file_match.pods.targets
+
+  rule {
+    source_labels = ["__path__"]
+    regex         = "/var/log/pods/([^_]+)_([^_]+)_[^/]+/([^/]+)/.*"
+    target_label  = "namespace"
+    replacement   = "$1"
+  }
+  rule {
+    source_labels = ["__path__"]
+    regex         = "/var/log/pods/([^_]+)_([^_]+)_[^/]+/([^/]+)/.*"
+    target_label  = "pod"
+    replacement   = "$2"
+  }
+  rule {
+    source_labels = ["__path__"]
+    regex         = "/var/log/pods/([^_]+)_([^_]+)_[^/]+/([^/]+)/.*"
+    target_label  = "container"
+    replacement   = "$3"
+  }
+  rule {
+    source_labels = ["container"]
+    target_label  = "service_name"
+  }
+  rule {
+    target_label = "job"
+    replacement  = "k3s-pods"
+  }
+}
+
+loki.source.file "pods" {
+  targets       = discovery.relabel.pods.output
+  tail_from_end = true                // don't replay weeks-old pod logs
+  forward_to    = [loki.process.cri.receiver]
+}
+
+loki.process "cri" {
+  stage.cri {}
+  // drop the per-file label; namespace/pod/container already identify the stream
+  stage.label_drop {
+    values = ["filename"]
+  }
+  forward_to = [loki.write.lab.receiver]
+}

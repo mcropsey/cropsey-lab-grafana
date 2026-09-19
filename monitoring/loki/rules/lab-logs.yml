@@ -1,0 +1,67 @@
+# /opt/monitoring/loki/rules/fake/lab-logs.yml   (Loki ruler; tenant "fake" = auth disabled)
+# Recording rules are remote-written to Prometheus (lab:log_*), where the
+# baseline-relative "LogErrorSpike" / "LogsMissing" alerts live (prometheus/rules/logs.yml).
+# Alerting rules here go straight to Alertmanager (localhost:9093).
+groups:
+  - name: log-recording
+    interval: 1m
+    rules:
+      # all log lines per host/job (used to detect a host that stops shipping)
+      - record: lab:log_lines:rate5m
+        expr: |
+          sum by (host, job) (rate({job=~".+"}[5m]))
+      # error-or-worse lines per host/service. detected_level comes from the
+      # journal priority for host services and from the line text for containers.
+      - record: lab:log_error_lines:rate5m
+        expr: |
+          sum by (host, service_name) (rate({job=~".+"} | detected_level=~"error|critical|fatal" [5m]))
+
+  - name: log-alerts
+    interval: 1m
+    rules:
+      - alert: LogOOMKill
+        expr: |
+          sum by (host) (count_over_time({service_name="kernel"} |~ "(?i)out of memory: killed process|oom-kill:" [5m])) > 0
+        labels: {severity: critical, source: logs}
+        annotations:
+          summary: "OOM killer fired on {{ $labels.host }}"
+          description: 'Explore: {service_name="kernel", host="{{ $labels.host }}"} |~ "(?i)out of memory|oom-kill"'
+
+      - alert: LogDiskOrFilesystemError
+        expr: |
+          sum by (host) (count_over_time({service_name="kernel"} |~ "(?i)I/O error|EXT4-fs error|XFS \\(.*\\): (corruption|metadata I/O error)|remounting filesystem read-only|Remounting filesystem read-only" [5m])) > 0
+        labels: {severity: critical, source: logs}
+        annotations:
+          summary: "Kernel disk/filesystem error on {{ $labels.host }}"
+          description: 'Explore: {service_name="kernel", host="{{ $labels.host }}"} |~ "(?i)I/O error|fs error|read-only"'
+
+      - alert: LogSegfault
+        expr: |
+          sum by (host) (count_over_time({service_name="kernel"} |= "segfault at" [5m])) > 0
+        labels: {severity: warning, source: logs}
+        annotations:
+          summary: "Process segfault on {{ $labels.host }}"
+
+      - alert: LogSystemdUnitFailing
+        # a unit that failed 3+ times in 15 min (crash loop). One-off failures don't fire.
+        expr: |
+          sum by (host, failed_unit) (count_over_time({job="journal"} |= "Failed with result" | regexp "(?P<failed_unit>[^ ]+): Failed with result" [15m])) >= 3
+        labels: {severity: warning, source: logs}
+        annotations:
+          summary: "{{ $labels.failed_unit }} on {{ $labels.host }} failed {{ $value }} times in 15m"
+          description: 'Explore: {host="{{ $labels.host }}", job="journal"} |= "{{ $labels.failed_unit }}"'
+
+      - alert: LogJournalCritical
+        # journald priority crit/alert/emerg from any host service
+        expr: |
+          sum by (host, service_name) (count_over_time({job="journal", level=~"crit|alert|emerg"}[5m])) > 0
+        labels: {severity: critical, source: logs}
+        annotations:
+          summary: "Critical journal message from {{ $labels.service_name }} on {{ $labels.host }}"
+
+      - alert: LogSSHBruteForce
+        expr: |
+          sum by (host) (count_over_time({service_name=~"sshd.service|ssh.service"} |~ "Failed password|Invalid user|authentication failure" [5m])) > 20
+        labels: {severity: warning, source: logs}
+        annotations:
+          summary: "{{ $value }} failed SSH logins on {{ $labels.host }} in 5m"

@@ -1,0 +1,11 @@
+# /opt/monitoring/grafana/provisioning/plugins/lokiexplore.yml
+# Logs Drilldown (grafana-lokiexplore-app): use Loki by default. Without this the
+# app falls back to Grafana's default data source (Prometheus) and shows
+# "Log volume has not been configured".
+apiVersion: 1
+apps:
+  - type: grafana-lokiexplore-app
+    org_id: 1
+    disabled: false
+    jsonData:
+      dataSource: loki

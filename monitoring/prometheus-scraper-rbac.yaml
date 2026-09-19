@@ -1,0 +1,47 @@
+# prometheus-scraper-rbac.yaml — applied on .99 (k3s). Additive only.
+# Lets the external Prometheus on 192.168.1.98 read kubelet /metrics,
+# /metrics/cadvisor, /metrics/resource, /metrics/probes. Nothing else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-scraper
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-kubelet-scraper
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/metrics"]
+    verbs: ["get"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor", "/metrics/resource", "/metrics/probes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-kubelet-scraper
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-kubelet-scraper
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-scraper
+    namespace: monitoring
+---
+# Long-lived token (no expiry). Rotate by deleting this Secret and re-applying.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prometheus-scraper-token
+  namespace: monitoring
+  annotations:
+    kubernetes.io/service-account.name: prometheus-scraper
+type: kubernetes.io/service-account-token

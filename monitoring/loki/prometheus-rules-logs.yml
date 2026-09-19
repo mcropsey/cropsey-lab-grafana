@@ -1,0 +1,32 @@
+# /opt/monitoring/prometheus/rules/logs.yml
+# Alerts on the lab:log_* series that the Loki ruler remote-writes (loki/rules/fake/lab-logs.yml).
+groups:
+  - name: lab-logs
+    rules:
+      - alert: LogErrorSpike
+        # error rate is 3x this service's own 1-day average AND at least 0.2/s (12/min),
+        # sustained 10m. Services with no history count as baseline 0, so a new
+        # error source at >=12/min also fires. Per-service baselines keep the
+        # crAPI lab's normal error chatter (.101) from firing all day.
+        expr: |
+          lab:log_error_lines:rate5m > 0.2
+          and
+          lab:log_error_lines:rate5m
+            > 3 * (avg_over_time(lab:log_error_lines:rate5m[1d] offset 15m)
+                   or lab:log_error_lines:rate5m * 0)
+        for: 10m
+        labels: {severity: warning, source: logs}
+        annotations:
+          summary: "Error spike: {{ $labels.service_name }} on {{ $labels.host }} at {{ $value | printf \"%.2f\" }} errors/s (3x its normal)"
+          description: 'Explore: {host="{{ $labels.host }}", service_name="{{ $labels.service_name }}"} | detected_level=~"error|critical|fatal"'
+
+      - alert: LogsMissing
+        # host shipped journal logs in the last day but nothing for 20m (Alloy down,
+        # host down, or network/firewall to .98:3100 broken)
+        expr: |
+          max_over_time(lab:log_lines:rate5m{job="journal"}[1d])
+            unless on (host) lab:log_lines:rate5m{job="journal"}
+        for: 20m
+        labels: {severity: warning, source: logs}
+        annotations:
+          summary: "No logs received from {{ $labels.host }} for 20m+"
